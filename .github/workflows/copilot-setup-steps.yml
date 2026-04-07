@@ -1,0 +1,70 @@
+name: "Copilot Setup Steps"
+
+# Run automatically when this file changes, and allow manual runs from the Actions tab
+on:
+    workflow_dispatch:
+    push:
+        paths:
+            - .github/workflows/copilot-setup-steps.yml
+    pull_request:
+        paths:
+            - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+    # Must be named `copilot-setup-steps` to be picked up by Copilot cloud agent
+    copilot-setup-steps:
+        runs-on: ubuntu-latest
+
+        permissions:
+            contents: read
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Set up Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "20"
+                  cache: "npm"
+
+            - name: Install Node.js dependencies
+              run: npm install
+
+            - name: Install Playwright browsers
+              run: npx playwright install --with-deps chromium
+
+            - name: Install code-server (VS Code in browser)
+              env:
+                  # Pin to a specific release to avoid pulling untrusted changes from HEAD
+                  CODE_SERVER_VERSION: "4.99.1"
+              run: |
+                  curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_amd64.deb" \
+                      -o /tmp/code-server.deb
+                  sudo dpkg -i /tmp/code-server.deb
+
+            - name: Start code-server
+              run: |
+                  mkdir -p ~/.config/code-server
+                  # auth: none is intentional — this is an ephemeral, single-use Copilot runner
+                  # that is not exposed to the public internet.
+                  cat > ~/.config/code-server/config.yaml <<'EOF'
+                  bind-addr: 127.0.0.1:8080
+                  auth: none
+                  cert: false
+                  EOF
+                  nohup code-server --config ~/.config/code-server/config.yaml "$GITHUB_WORKSPACE" \
+                      > /tmp/code-server.log 2>&1 &
+                  CODE_SERVER_PID=$!
+                  echo "code-server PID: $CODE_SERVER_PID"
+                  # Wait for code-server to begin listening
+                  for i in $(seq 1 15); do
+                      if curl -sf http://127.0.0.1:8080 > /dev/null 2>&1; then
+                          echo "VS Code browser environment is ready at http://localhost:8080"
+                          exit 0
+                      fi
+                      sleep 2
+                  done
+                  echo "code-server did not start in time — logs:" >&2
+                  cat /tmp/code-server.log >&2
+                  exit 1
